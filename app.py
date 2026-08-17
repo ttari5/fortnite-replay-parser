@@ -1,36 +1,63 @@
-from flask import Flask, request, jsonify
 import os
+import traceback
 import tempfile
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Try to import the parser
+PARSER_AVAILABLE = False
+PARSER_TYPE = None
+IMPORT_ERROR = None
+
+# Try different import names
 try:
     from fortnite_replay_parser import ReplayParser
     PARSER_AVAILABLE = True
-except ImportError:
-    PARSER_AVAILABLE = False
-    print("Warning: fortnite-replay-parser not installed")
+    PARSER_TYPE = "fortnite_replay_parser"
+    print("Loaded: fortnite_replay_parser")
+except ImportError as e:
+    IMPORT_ERROR = str(e)
+    print(f"Import failed for fortnite_replay_parser: {e}")
+    
+    # Try alternative names
+    try:
+        import fortnite_replay_parser as frp
+        PARSER_AVAILABLE = True
+        PARSER_TYPE = "fortnite_replay_parser_alt"
+        print("Loaded: fortnite_replay_parser (alt)")
+    except ImportError as e2:
+        print(f"Alt import failed: {e2}")
 
-# Root route - so you don't get 404 at /
 @app.route('/')
 def home():
     return jsonify({
         'service': 'Fortnite Replay Parser',
         'status': 'running',
-        'endpoints': ['/health', '/parse'],
-        'parser_available': PARSER_AVAILABLE
+        'parser_available': PARSER_AVAILABLE,
+        'parser_type': PARSER_TYPE,
+        'import_error': IMPORT_ERROR,
+        'endpoints': ['/health', '/parse', '/debug']
     })
 
-# Health check
 @app.route('/health')
 def health():
     return jsonify({
         'status': 'ok',
-        'parser_available': PARSER_AVAILABLE
+        'parser_available': PARSER_AVAILABLE,
+        'parser_type': PARSER_TYPE,
+        'import_error': IMPORT_ERROR
     })
 
-# Parse replay file
+@app.route('/debug')
+def debug():
+    import pkgutil
+    modules = [m.name for m in pkgutil.iter_modules() if 'fortnite' in m.name.lower() or 'replay' in m.name.lower()]
+    return jsonify({
+        'fortnite_replay_parser': PARSER_AVAILABLE,
+        'import_error': IMPORT_ERROR,
+        'related_modules': modules
+    })
+
 @app.route('/parse', methods=['POST'])
 def parse_replay():
     try:
@@ -40,8 +67,8 @@ def parse_replay():
         replay_file = request.files['replay']
         match_id = request.form.get('matchId', '')
         
-        # If parser not available, return mock data
         if not PARSER_AVAILABLE:
+            # Return mock data for testing
             return jsonify({
                 'matchId': match_id,
                 'players': [{
@@ -54,10 +81,11 @@ def parse_replay():
                     'eliminations': 5,
                     'placement': 1
                 }],
-                'mock': True
+                'mock': True,
+                'parser_type': PARSER_TYPE
             })
         
-        # Save to temp file
+        # Real parsing
         with tempfile.NamedTemporaryFile(delete=False, suffix='.replay') as tmp:
             replay_file.save(tmp.name)
             tmp_path = tmp.name
@@ -82,13 +110,14 @@ def parse_replay():
             return jsonify({
                 'matchId': match_id,
                 'players': players,
-                'parsedAt': int(__import__('time').time())
+                'parsedAt': int(__import__('time').time()),
+                'parser_type': PARSER_TYPE
             })
         finally:
             os.unlink(tmp_path)
             
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': str(e), 'parser_type': PARSER_TYPE}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
