@@ -8,18 +8,29 @@ PARSER_AVAILABLE = False
 PARSER_INFO = "not loaded"
 
 try:
-    import fortnite_replay_parser as frp
+    from fortnite_replay_parser import ReplayParser
     PARSER_AVAILABLE = True
-    PARSER_INFO = str(dir(frp))
-except Exception as e:
-    PARSER_INFO = str(e)
+    PARSER_INFO = "ReplayParser loaded"
+except ImportError:
+    try:
+        from fortnite_replay_parser.replay_parser import ReplayParser
+        PARSER_AVAILABLE = True
+        PARSER_INFO = "ReplayParser loaded from submodule"
+    except ImportError:
+        try:
+            import fortnite_replay_parser as frp
+            PARSER_AVAILABLE = True
+            PARSER_INFO = "Package loaded, contents: " + str(dir(frp))
+        except Exception as e:
+            PARSER_INFO = "Failed: " + str(e)
 
 @app.route('/')
 def home():
     return jsonify({
         'service': 'Fortnite Replay Parser',
         'parser_available': PARSER_AVAILABLE,
-        'parser_info': PARSER_INFO
+        'parser_info': PARSER_INFO,
+        'endpoints': ['/health', '/parse', '/debug']
     })
 
 @app.route('/health')
@@ -36,7 +47,6 @@ def debug():
         import fortnite_replay_parser as frp
         return jsonify({
             'dir': dir(frp),
-            'file': str(getattr(frp, '__file__', 'none')),
             'path': str(getattr(frp, '__path__', 'none'))
         })
     except Exception as e:
@@ -51,23 +61,54 @@ def parse_replay():
         replay_file = request.files['replay']
         match_id = request.form.get('matchId', '')
         
-        # Mock data for now
-        return jsonify({
-            'matchId': match_id,
-            'players': [{
-                'accountId': 'test',
-                'name': 'TestPlayer',
-                'damageDealt': 1250,
-                'damageTaken': 800,
-                'materialsUsed': 450,
-                'stormDamage': 150,
-                'eliminations': 5,
-                'placement': 1
-            }],
-            'mock': True
-        })
+        if not PARSER_AVAILABLE:
+            return jsonify({
+                'matchId': match_id,
+                'players': [{
+                    'accountId': 'test',
+                    'name': 'TestPlayer',
+                    'damageDealt': 1250,
+                    'damageTaken': 800,
+                    'materialsUsed': 450,
+                    'stormDamage': 150,
+                    'eliminations': 5,
+                    'placement': 1
+                }],
+                'mock': True
+            })
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.replay') as tmp:
+            replay_file.save(tmp.name)
+            tmp_path = tmp.name
+        
+        try:
+            parser = ReplayParser(tmp_path)
+            match_data = parser.parse()
+            
+            players = []
+            for player in match_data.get('players', []):
+                players.append({
+                    'accountId': player.get('accountId', ''),
+                    'name': player.get('displayName', ''),
+                    'damageDealt': player.get('damageDealt', 0),
+                    'damageTaken': player.get('damageTaken', 0),
+                    'materialsUsed': player.get('materialsUsed', 0),
+                    'stormDamage': player.get('stormDamage', 0),
+                    'eliminations': player.get('eliminations', 0),
+                    'placement': player.get('placement', 0)
+                })
+            
+            return jsonify({
+                'matchId': match_id,
+                'players': players,
+                'parsedAt': int(__import__('time').time())
+            })
+        finally:
+            os.unlink(tmp_path)
+            
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        import traceback
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
